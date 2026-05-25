@@ -12,9 +12,6 @@ env:
 
 jobs:
 
-  # ─────────────────────────────────────────────────────────
-  # JOB 1 — Build application
-  # ─────────────────────────────────────────────────────────
   build:
     name: "Build Application"
     runs-on: ubuntu-latest
