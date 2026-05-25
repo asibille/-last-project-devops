@@ -31,9 +31,6 @@ jobs:
       - name: Docker Build app
         run: docker compose build frontend backend db
 
-  # ─────────────────────────────────────────────────────────
-  # JOB 2 — Build infrastructure Docker
-  # ─────────────────────────────────────────────────────────
   build-infrastructure:
     name: "Build Infrastructure Docker"
     runs-on: ubuntu-latest
@@ -63,26 +60,29 @@ jobs:
           docker compose cp ~/.ssh/id_rsa ansible-controller:/root/.ssh/id_rsa
           docker compose exec ansible-controller chmod 600 /root/.ssh/id_rsa
 
-      - name: Attendre SSH sur les 3 noeuds
+      - name: Attendre que les noeuds SSH soient prêts
+        run: |
+          for node in ubuntu-node fedora-node redhat-node; do
+            echo "Attente sshd sur $node..."
+            timeout 60 bash -c \
+              "until docker exec $node sh -c 'ss -tlnp | grep :22' 2>/dev/null; \
+               do sleep 2; done"
+            echo "$node pret"
+          done
+
+      - name: Tester connexion SSH via controller
         run: |
           for ip in 172.20.0.21 172.20.0.22 172.20.0.23; do
-            echo "Attente SSH sur $ip..."
-            timeout 120 bash -c \
-              "until docker compose exec ansible-controller \
-               ssh -i /root/.ssh/id_rsa \
-               -o StrictHostKeyChecking=no \
-               -o ConnectTimeout=5 \
-               ansible@$ip 'echo ok' 2>/dev/null; \
-               do sleep 3; done"
-            echo "$ip pret"
+            docker compose exec ansible-controller \
+              ssh -i /root/.ssh/id_rsa \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=10 \
+              ansible@$ip 'hostname' && echo "$ip OK"
           done
 
       - name: Status containers
         run: docker compose ps
 
-  # ─────────────────────────────────────────────────────────
-  # JOB 3 — Terraform : génération inventaire
-  # ─────────────────────────────────────────────────────────
   terraform:
     name: "Terraform — Inventaire"
     runs-on: ubuntu-latest
@@ -97,7 +97,14 @@ jobs:
             --build-arg SSH_PUB_KEY="$(cat ~/.ssh/id_rsa.pub)" \
             ansible-controller ubuntu-node fedora-node redhat-node
           docker compose up -d ansible-controller ubuntu-node fedora-node redhat-node
-          sleep 10
+
+      - name: Attendre sshd sur les noeuds
+        run: |
+          for node in ubuntu-node fedora-node redhat-node; do
+            timeout 60 bash -c \
+              "until docker exec $node sh -c 'ss -tlnp | grep :22' 2>/dev/null; \
+               do sleep 2; done"
+          done
 
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -130,9 +137,6 @@ jobs:
           name: ansible-inventory
           path: inventory/hosts.ini
 
-  # ─────────────────────────────────────────────────────────
-  # JOB 4 — Ansible : automation
-  # ─────────────────────────────────────────────────────────
   ansible:
     name: "Ansible — Automation"
     runs-on: ubuntu-latest
@@ -147,22 +151,19 @@ jobs:
             --build-arg SSH_PUB_KEY="$(cat ~/.ssh/id_rsa.pub)" \
             ansible-controller ubuntu-node fedora-node redhat-node
           docker compose up -d ansible-controller ubuntu-node fedora-node redhat-node
-          sleep 15
 
       - name: Copier clé privée dans le controller
         run: |
+          sleep 3
           docker compose cp ~/.ssh/id_rsa ansible-controller:/root/.ssh/id_rsa
           docker compose exec ansible-controller chmod 600 /root/.ssh/id_rsa
 
-      - name: Attendre SSH sur les 3 noeuds
+      - name: Attendre sshd sur les noeuds
         run: |
-          for ip in 172.20.0.21 172.20.0.22 172.20.0.23; do
-            timeout 120 bash -c \
-              "until docker compose exec ansible-controller \
-               ssh -i /root/.ssh/id_rsa \
-               -o StrictHostKeyChecking=no \
-               -o ConnectTimeout=5 ansible@$ip 'echo ok' 2>/dev/null; \
-               do sleep 3; done"
+          for node in ubuntu-node fedora-node redhat-node; do
+            timeout 60 bash -c \
+              "until docker exec $node sh -c 'ss -tlnp | grep :22' 2>/dev/null; \
+               do sleep 2; done"
           done
 
       - name: Télécharger inventaire Terraform
@@ -204,7 +205,7 @@ jobs:
           echo "=== Verification finale ==="
           for c in ubuntu-node fedora-node redhat-node; do
             printf "[%s] timezone: " "$c"
-            docker compose exec $c \
+            docker exec $c \
               sh -c "cat /etc/timezone 2>/dev/null || timedatectl show --property=Timezone --value"
           done
 
