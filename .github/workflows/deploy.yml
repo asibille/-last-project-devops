@@ -3,7 +3,7 @@ name: CI/CD Pipeline
 on:
   push:
     branches:
-      - master 
+      - master
   workflow_dispatch:
 
 env:
@@ -26,19 +26,16 @@ jobs:
           node-version: 18
 
       - name: Install Backend
-        working-directory: projet-final/backend
-        run: npm install
+        run: cd backend && npm install
 
       - name: Install Frontend
-        working-directory: projet-final/frontend
-        run: npm install
+        run: cd frontend && npm install
 
       - name: Docker Build app
-        working-directory: projet-final
         run: docker compose build frontend backend db
 
   # ─────────────────────────────────────────────────────────
-  # JOB 2 — Build infrastructure Docker (Ansible nodes)
+  # JOB 2 — Build infrastructure Docker
   # ─────────────────────────────────────────────────────────
   build-infrastructure:
     name: "Build Infrastructure Docker"
@@ -53,27 +50,23 @@ jobs:
           ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
           echo "SSH_PUB_KEY=$(cat ~/.ssh/id_rsa.pub)" >> $GITHUB_ENV
 
-      - name: Build images Docker (nodes Ansible)
-        working-directory: projet-final
+      - name: Build images Docker nodes Ansible
         run: |
           docker compose build \
             --build-arg SSH_PUB_KEY="${{ env.SSH_PUB_KEY }}" \
             ansible-controller ubuntu-node fedora-node redhat-node
 
       - name: Démarrer les containers
-        working-directory: projet-final
         run: |
           docker compose up -d ansible-controller ubuntu-node fedora-node redhat-node
 
       - name: Copier clé privée dans le controller
-        working-directory: projet-final
         run: |
           sleep 5
           docker compose cp ~/.ssh/id_rsa ansible-controller:/root/.ssh/id_rsa
           docker compose exec ansible-controller chmod 600 /root/.ssh/id_rsa
 
-      - name: Attendre SSH disponible sur les 3 noeuds
-        working-directory: projet-final
+      - name: Attendre SSH sur les 3 noeuds
         run: |
           for ip in 172.20.0.21 172.20.0.22 172.20.0.23; do
             echo "Attente SSH sur $ip..."
@@ -88,11 +81,10 @@ jobs:
           done
 
       - name: Status containers
-        working-directory: projet-final
         run: docker compose ps
 
   # ─────────────────────────────────────────────────────────
-  # JOB 3 — Terraform : génération inventaire Ansible
+  # JOB 3 — Terraform : génération inventaire
   # ─────────────────────────────────────────────────────────
   terraform:
     name: "Terraform — Inventaire"
@@ -102,7 +94,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Générer clé SSH + démarrer containers
-        working-directory: projet-final
         run: |
           ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
           docker compose build \
@@ -116,23 +107,22 @@ jobs:
           terraform_version: "1.7.5"
 
       - name: Terraform Init
-        working-directory: projet-final/terraform
+        working-directory: terraform
         run: terraform init
 
       - name: Terraform Validate
-        working-directory: projet-final/terraform
+        working-directory: terraform
         run: terraform validate
 
       - name: Terraform Plan
-        working-directory: projet-final/terraform
+        working-directory: terraform
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
-        working-directory: projet-final/terraform
+        working-directory: terraform
         run: terraform apply -auto-approve tfplan
 
       - name: Afficher inventaire généré
-        working-directory: projet-final
         run: |
           echo "=== Inventaire généré par Terraform ==="
           cat inventory/hosts.ini
@@ -141,10 +131,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ansible-inventory
-          path: projet-final/inventory/hosts.ini
+          path: inventory/hosts.ini
 
   # ─────────────────────────────────────────────────────────
-  # JOB 4 — Ansible : gather facts + gestion timezone
+  # JOB 4 — Ansible : automation
   # ─────────────────────────────────────────────────────────
   ansible:
     name: "Ansible — Automation"
@@ -154,7 +144,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Générer clé SSH + démarrer containers
-        working-directory: projet-final
         run: |
           ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
           docker compose build \
@@ -164,13 +153,11 @@ jobs:
           sleep 15
 
       - name: Copier clé privée dans le controller
-        working-directory: projet-final
         run: |
           docker compose cp ~/.ssh/id_rsa ansible-controller:/root/.ssh/id_rsa
           docker compose exec ansible-controller chmod 600 /root/.ssh/id_rsa
 
       - name: Attendre SSH sur les 3 noeuds
-        working-directory: projet-final
         run: |
           for ip in 172.20.0.21 172.20.0.22 172.20.0.23; do
             timeout 120 bash -c \
@@ -185,20 +172,17 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ansible-inventory
-          path: projet-final/inventory/
+          path: inventory/
 
       - name: Copier inventaire dans le controller
-        working-directory: projet-final
         run: docker compose cp inventory/hosts.ini ansible-controller:/inventory/hosts.ini
 
       - name: Installer collection community.general
-        working-directory: projet-final
         run: |
           docker compose exec ansible-controller \
             ansible-galaxy collection install community.general
 
       - name: "STEP 1 — Gather facts controller"
-        working-directory: projet-final
         run: |
           docker compose exec ansible-controller \
             ansible localhost -m gather_facts \
@@ -206,14 +190,12 @@ jobs:
             -e "ansible_connection=local"
 
       - name: "STEP 2 — Ping noeuds Linux"
-        working-directory: projet-final
         run: |
           docker compose exec ansible-controller \
             ansible linux_nodes -m ping \
             --inventory /inventory/hosts.ini
 
-      - name: "STEP 3 — Playbook timezone (Paris puis Abidjan)"
-        working-directory: projet-final
+      - name: "STEP 3 — Playbook timezone Paris puis Abidjan"
         run: |
           docker compose exec ansible-controller \
             ansible-playbook /ansible/playbook.yaml \
@@ -221,7 +203,6 @@ jobs:
             -v
 
       - name: "STEP 4 — Verification finale timezones"
-        working-directory: projet-final
         run: |
           echo "=== Verification finale ==="
           for c in ubuntu-node fedora-node redhat-node; do
@@ -231,10 +212,8 @@ jobs:
           done
 
       - name: Afficher facts controller
-        working-directory: projet-final
         run: docker compose exec ansible-controller cat /tmp/controller_facts.txt || true
 
       - name: Nettoyage
         if: always()
-        working-directory: projet-final
         run: docker compose down -v
